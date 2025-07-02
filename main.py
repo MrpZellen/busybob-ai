@@ -1,17 +1,18 @@
 from fastapi import FastAPI;
-import os;
-# huggingface signin process
+from dotenv import load_dotenv
+import os
 from huggingface_hub import login
-HF_TOKEN = os.environ.get("HF_TOKEN")
+from langchain_huggingface import HuggingFacePipeline, HuggingFaceEndpoint, ChatHuggingFace
+from langchain_huggingface import HuggingFacePipeline, HuggingFaceEndpoint, ChatHuggingFace
+from langchain_core.messages import HumanMessage, SystemMessage
+load_dotenv()
+# huggingface signin process
+HF_TOKEN = os.getenv("HF_TOKEN")
 if not HF_TOKEN:
-    raise ValueError("HF_TOKEN not found in environment variables")
+    raise ValueError("HF_TOKEN is missing from environment variables")
 
 login(token=HF_TOKEN)
 app = FastAPI()
-
-from langchain_huggingface import HuggingFacePipeline, HuggingFaceEndpoint, ChatHuggingFace
-# access token: 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
-from langchain_core.messages import HumanMessage, SystemMessage
 
 app = FastAPI()
 
