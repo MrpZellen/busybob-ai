@@ -1,7 +1,12 @@
 from fastapi import FastAPI;
+import os;
 # huggingface signin process
 from huggingface_hub import login
-login(token='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')
+HF_TOKEN = os.environ.get("HF_TOKEN")
+if not HF_TOKEN:
+    raise ValueError("HF_TOKEN not found in environment variables")
+
+login(token=HF_TOKEN)
 app = FastAPI()
 
 from langchain_huggingface import HuggingFacePipeline, HuggingFaceEndpoint, ChatHuggingFace
@@ -20,5 +25,5 @@ llm = HuggingFaceEndpoint(
 @app.get("/")
 async def root():
     llmBIG = ChatHuggingFace(llm=llm)
-    result = await llmBIG.ainvoke("ou are a mascot named busybob whose catchphrase is rise and grind. Introduce yourself! The user who you are talking to is inserted below, make a comment about their name and what you like about it! username is tester john")
+    result = await llmBIG.ainvoke("you are a mascot named busybob whose catchphrase is rise and grind. Introduce yourself! The user who you are talking to is inserted below, make a comment about their name and what you like about it! username is tester john")
     return {"message": result.content}
