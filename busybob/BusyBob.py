@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv
-import os, pymongo, asyncio, torch, json
+import os, pymongo, asyncio, json
 from huggingface_hub import login
 from langchain_huggingface import HuggingFacePipeline, HuggingFaceEndpoint, ChatHuggingFace
 from fastapi.middleware.cors import CORSMiddleware
