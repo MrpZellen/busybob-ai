@@ -52,26 +52,7 @@ async def pymongtest():
         return False
 
 
-@app.post("/")
-async def post_root(request: Request):
-    print("POST endpoint hit!")
-    body = await request.json()
-    print(f"Received data: {body}")
-    
-    llmBIG = ChatHuggingFace(llm=llm)
-    testerMong = await pymongtest()
 
-    invokeString = f"you are a mascot named busybob whose catchphrase is rise and grind (he's a little confused but has the spirit). " \
-    "Introduce yourself! The user who you are talking to is inserted below, make a comment about their name and what you like about it! " \
-    "username is {0}".format(body['user'])
-
-    result = await llmBIG.ainvoke(invokeString)
-    
-    return {
-        "message": result.content,
-        "connectedToMongo": testerMong,
-        "receivedData": body if body else None
-    }
 @app.get("/debug")
 async def debug_routes():
     routes = []
@@ -79,15 +60,14 @@ async def debug_routes():
         routes.append(f"{route.methods} {route.path}")
     return {"routes": routes}
 
-@app.post('/busybob')
+@app.post('/')
 async def pagingBob(request: Request):
     print('REACHED!!!')
+    body = await request.json()
+    print('BODY:', body)
     try:
         print('request', request)
-        print('raw', request.body())
-        jsonStuff = await request.json()
-        print('jsonStuff', jsonStuff)
-        responseObject = await post_root(jsonStuff['data'])
+        responseObject = await post_root(body)
         print(responseObject)
         return {"response": responseObject}
     except Exception as e:

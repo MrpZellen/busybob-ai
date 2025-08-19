@@ -62,15 +62,18 @@ bobJudgementalPipeline = pipeline("zero-shot-classification", model="valhalla/di
 async def post_root(request: Request):
     intValList = {}
     strValList = {}
-    print("POST endpoint hit!")
+    print("POST endpoint!")
+    print('JSONT TIME')
     body = {}
-    for key, nested_dict in request.items():
+    collType = request['coll']
+    for key, nested_dict in request['data'].items():
+        print('IN HERE')
         if isinstance(nested_dict, dict):
             for nested_key, nested_value in nested_dict.items():
                 body[f"{key}_{nested_key}"] = nested_value
         else:
-            body[key] = nested_dict 
-    print(f"Received data: {body}")
+            body[key] = nested_dict
+    print(body, 'flattened?')
     # first we organize.
     for (key, value) in body.items():
         print(key, value)
@@ -143,8 +146,8 @@ async def post_root(request: Request):
     # push to mongoDB
     client = pymongo.MongoClient(MONGODB_URI)
     db = client.survey_data
-    collection = db.responses
-    newResponse = await collection.insert_one(myNewResult).inserted_id
+    collection = db[collType]
+    newResponse = collection.insert_one(myNewResult).inserted_id
     # return code
     if newResponse:
         return {
@@ -156,6 +159,10 @@ async def post_root(request: Request):
             "status": 400,
             "code": "failed to push data changes"
         }
+
+
+async def postNew():
+    print('wow')
 
 async def getGibberishSort(strValList):
     resultingGibberish = {}
