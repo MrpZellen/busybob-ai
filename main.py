@@ -6,7 +6,7 @@ from langchain_huggingface import HuggingFacePipeline, HuggingFaceEndpoint, Chat
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Dict
-from busybob import BusyBob
+from BusyBob import post_root
 
 
 load_dotenv()
@@ -81,8 +81,18 @@ async def debug_routes():
 
 @app.post('/busybob')
 async def pagingBob(request: Request):
-    responseObject = BusyBob.post_root(request=request)
-    print(responseObject)
-    return {
-        'response': responseObject
-    }
+    print('REACHED!!!')
+    try:
+        print('request', request)
+        print('raw', request.body())
+        jsonStuff = await request.json()
+        print('jsonStuff', jsonStuff)
+        responseObject = await post_root(jsonStuff['data'])
+        print(responseObject)
+        return {"response": responseObject}
+    except Exception as e:
+        print(f"Error in pagingBob: {e}")
+        return {
+            "error": str(e),
+            "status": 500
+        }

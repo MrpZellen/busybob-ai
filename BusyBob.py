@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Dict
 from transformers import pipeline
-from .judgementLabels import labels, labelsLite
+from judgementLabels import labels, labelsLite
 
 
 # STEPS FOR DATA PROCESSING: 
@@ -28,15 +28,6 @@ if not HF_TOKEN or not MONGODB_URI:
 
 login(token=HF_TOKEN)
 
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 class SurveyData(BaseModel):
     schedulingMeetups: Dict[str, Any]
@@ -72,7 +63,13 @@ async def post_root(request: Request):
     intValList = {}
     strValList = {}
     print("POST endpoint hit!")
-    body = await request.json()
+    body = {}
+    for key, nested_dict in request.items():
+        if isinstance(nested_dict, dict):
+            for nested_key, nested_value in nested_dict.items():
+                body[f"{key}_{nested_key}"] = nested_value
+        else:
+            body[key] = nested_dict 
     print(f"Received data: {body}")
     # first we organize.
     for (key, value) in body.items():
@@ -122,23 +119,23 @@ async def post_root(request: Request):
         pocketTag = tagResult[0][currentIndex]
         fullQuestionItem.append({key: {
             'cleanliness': {
-                'label': pocketValue['label'],
-                'score': pocketValue['score']
+                'label': str(pocketValue['label']),
+                'score': float(pocketValue['score'])
             },
             'connotation': {
-                'label': pocketSentiment['label'],
-                'score': pocketSentiment['score']
+                'label': str(pocketSentiment['label']),
+                'score': float(pocketSentiment['score'])
             },
             'tags': {
-                'labels': pocketTag['labels'],
-                'scores': pocketTag['scores']
+                'labels': [str(string) for string in pocketTag["labels"]],
+                'scores': [float(fl) for fl in pocketTag["scores"]],
             }
         }})
         currentIndex = currentIndex + 1
     myNewResult = {
         "summarySentiment": {
-            "values": summarySentiment[0]['labels'],
-            "scores": summarySentiment[0]['scores']
+            "values": [str(string) for string in summarySentiment[0]['labels']],
+            "scores": [float(fl) for fl in summarySentiment[0]['scores']]
         },
         "topThreeResults": top3Results,
         "fullQuestions": fullQuestionItem
@@ -147,7 +144,7 @@ async def post_root(request: Request):
     client = pymongo.MongoClient(MONGODB_URI)
     db = client.survey_data
     collection = db.responses
-    newResponse = collection.insert_one(myNewResult).inserted_id
+    newResponse = await collection.insert_one(myNewResult).inserted_id
     # return code
     if newResponse:
         return {
