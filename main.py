@@ -6,7 +6,7 @@ from langchain_huggingface import HuggingFacePipeline, HuggingFaceEndpoint, Chat
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Dict
-from BusyBob import post_root
+from BusyBob import post_root, processResults
 
 
 load_dotenv()
@@ -72,6 +72,21 @@ async def pagingBob(request: Request):
         return {"response": responseObject}
     except Exception as e:
         print(f"Error in pagingBob: {e}")
+        return {
+            "error": str(e),
+            "status": 500
+        }
+
+@app.post('/processResults')
+async def processingSurveys(request: Request):
+    print('WE ARE PROCESSING.')
+    body = await request.json()
+    print('MY BODY: ', body)
+    try:
+        response = await processResults(body)
+        return {"response": response}
+    except Exception as e:
+        print(f"ERROR: {e}")
         return {
             "error": str(e),
             "status": 500

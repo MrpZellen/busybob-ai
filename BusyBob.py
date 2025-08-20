@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv
-import os, pymongo, asyncio, json, torch
+import os, pymongo, asyncio, json, torch, pprint
 from huggingface_hub import login
 from langchain_huggingface import HuggingFacePipeline, HuggingFaceEndpoint, ChatHuggingFace
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,7 +22,7 @@ load_dotenv()
 
 # huggingface signin process
 HF_TOKEN = os.getenv("HF_TOKEN")
-MONGODB_URI = os.getenv("MONGODB_URI")
+MONGODB_URI = os.getenv("MONGOPDF_URI")
 if not HF_TOKEN or not MONGODB_URI:
     raise ValueError("HF_TOKEN is missing from environment variables")
 
@@ -40,14 +40,6 @@ class SurveyData(BaseModel):
 #|     REGISTRY       |
 #|--------------------|
 
-# THIS BOB TESTS 
-bobOfTest = HuggingFaceEndpoint(
-    repo_id="meta-llama/Meta-Llama-3-8B-Instruct",
-    task="conversational",
-    max_new_tokens=100,
-    do_sample=False,
-)
-
 # THIS BOB READS POSITIVE AND NEGATIVE SENTIMENT
 bobEmotivePipeline = pipeline("sentiment-analysis", model="distilbert/distilbert-base-uncased-finetuned-sst-2-english")
 
@@ -58,6 +50,16 @@ bobGibberishPipeline = pipeline("text-classification", model="madhurjindal/auton
 bobJudgementalPipeline = pipeline("zero-shot-classification", model="valhalla/distilbart-mnli-12-1")
 
 # NO BOB FOR ANSWER QUALITY, MATH THAT MYSELF FOR WEIGHTING OFF OF EXISTING DATA.
+
+# NO BOB FOR AGGREGATION, DUH DOY.
+
+# THIS BOB PROVIDES A SUMMARY OF THE INFORMATION ITS FED, AGGREGATE SCORES ON QUESTIONS. 
+bobOfTest = HuggingFaceEndpoint(
+    repo_id="meta-llama/Meta-Llama-3-8B-Instruct",
+    task="conversational",
+    max_new_tokens=100,
+    do_sample=False,
+)
 
 async def post_root(request: Request):
     intValList = {}
@@ -161,8 +163,46 @@ async def post_root(request: Request):
         }
 
 
-async def postNew():
-    print('wow')
+async def processResults(request: Request):
+    # this is called when the cron weekly crons all over and decides its time to process results and close the survey.
+    print('CRON HAS PROCESSED. WE ARE BOBLINE.')
+    collType = request['collection']
+    print(collType)
+    # get mongo items.
+    print('past that')
+    client = pymongo.MongoClient(MONGODB_URI)
+    print('client reached')
+    db = client.survey_data
+    print('db connected: ', db)
+    collection = db[collType]
+    print('collection found: ', collection)
+    allMyData = []
+    for doc in collection.find():
+        doc["_id"] = str(doc["_id"])
+        allMyData.append(doc)
+    aggregatedNumData = aggregateNums(allMyData) # returns aggregated values for each number based response.
+    return {"data": aggregatedNumData}
+
+def aggregateNums(fullDataObject):
+    finalitem = []
+    usedListyThing = {}
+    for item in fullDataObject:
+        print(item)
+        summaryNumsToCompile = []
+        summaryQuestionsToCompile = {}
+        for key, value in item.items():
+            if key == '_id' or key == 'topThreeResults': # TODO: FIX TOP THREE RESULTS
+                continue
+            if key == 'summarySentiment':
+                summaryNumsToCompile.append(value[1])
+            if key == 'fullQuestions':
+                summaryQuestionsToCompile.update( f'{key}': {
+                    "cleanliness": {},
+                    "connotation": {},
+                    "tags": {}
+                })
+    return fullDataObject
+
 
 async def getGibberishSort(strValList):
     resultingGibberish = {}
@@ -175,7 +215,7 @@ async def getGibberishSort(strValList):
     print(resultingGibberish)
     finalGib = {}
     for (key, item) in resultingGibberish.items():
-        if item[0]['label'] == 'clean' or (item[0]['label'] == 'mild gibberish' and item[0]['score'] < 0.9):
+        if item[0]['label'] == 'clean' or (item[0]['label'] == 'mild gibberish' and item[0]['score'] > 0.6):
             finalGib[key] = (item)
     return finalGib
 
@@ -227,6 +267,7 @@ def gatherTopThree(itemsToProcess):
     #top three found
     print('top3: ', topThree)
     return topThree
+
 
 
 # STEPS FOR RESPONSE GENERATION:
