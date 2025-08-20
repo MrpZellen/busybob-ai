@@ -196,11 +196,67 @@ def aggregateNums(fullDataObject):
             if key == 'summarySentiment':
                 summaryNumsToCompile.append(value[1])
             if key == 'fullQuestions':
-                summaryQuestionsToCompile.update( f'{key}': {
-                    "cleanliness": {},
-                    "connotation": {},
-                    "tags": {}
-                })
+                for quesKey, quesItem in value.items():
+                    summaryQuestionsToCompile.update({
+                        "cleanliness": {
+                            "label": quesItem['cleanliness']['label'],
+                            "score": quesItem['cleanliness']['score']
+                        },
+                        "connotation": {
+                            "label": quesItem['connotation']['label'],
+                            "score": quesItem['connotation']['score']
+                        },
+                        "tags": {
+                            "labels": quesItem['tags']['labels'],
+                            "scores": quesItem['tags']['scores']
+                        }
+                    })
+        # handle summary numbers
+        finalSumNum = []
+        for index in range(len(summaryNumsToCompile)):
+            summatedValue = 0
+            for value in summaryNumsToCompile:
+                summatedValue = summatedValue + value[index]
+            summatedValue = summatedValue / range(len(summaryNumsToCompile))
+            finalSumNum.append(summatedValue)
+        print(finalSumNum, 'final sum num')
+        # handle summary questions
+        finalCleanlinessSum = 0
+        for cleanKey, cleanVal in summaryQuestionsToCompile['cleanliness'].items():
+            if cleanKey == 'clean':
+                finalCleanlinessSum = finalCleanlinessSum + cleanVal*2 #weighted twice for clean full resp
+            else: # case of mild gibberish
+                finalCleanlinessSum = finalCleanlinessSum + cleanVal*0.75 #slightly lower weight on anything marked mild gibberish
+        finalCleanlinessSum = finalCleanlinessSum / len(summaryQuestionsToCompile) #div length of question count
+        finalPosConSum = 0
+        finalNegConSum = 0 
+        for rateKey, rateVal in summaryQuestionsToCompile['connotation'].items():
+            if rateKey == 'POSITIVE':
+                finalPosConSum = finalPosConSum + rateVal
+            else: # its negative
+                finalNegConSum = finalNegConSum + (rateVal*0.6) #tone down negative weighting
+        weightedConnotationSum = finalPosConSum - finalNegConSum
+        print('weighted connotation sum: ', weightedConnotationSum)
+        finalTagSums = {}
+        #handles tag numbers
+        for label in labelsLite:
+            foundIndex = 0
+            for key, value in summaryQuestionsToCompile['tags']['labels'].items():
+                if key == label:
+                    break
+                else:
+                    foundIndex = foundIndex + 1
+            labelAvg = 0
+            for item in summaryQuestionsToCompile:
+                item['tags']['labels'][foundIndex]
+            finalTagSums.update({
+                "labelAvg": labelAvg,
+                "label": label
+            })
+
+
+
+
     return fullDataObject
 
 
