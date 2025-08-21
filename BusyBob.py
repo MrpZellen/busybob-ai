@@ -207,7 +207,7 @@ async def processResults(request: Request):
             "tone": "serious",
             "description": 5
         }
-    finalItem = await getAIResponse(aggregatedNumData, previousData, bobDeets["avoid"], bobDeets["tone"], bobDeets["description"])
+    finalItem = getAIResponse(aggregatedNumData, previousData, bobDeets["avoid"], bobDeets["tone"], bobDeets["description"])
     #send our email and PDF document
     today = datetime.date.today()
     formatDay = today.strftime('%d-%m-%Y')
