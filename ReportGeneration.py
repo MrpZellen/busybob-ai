@@ -55,6 +55,7 @@ async def GenerateDocument(reportDate: datetime.date, companyName: str, bobRespo
         b64pdf = base64.b64encode(result).decode('ascii')
         docToInsert = ColDoc('COM-newtest', b64pdf)
         await insertB64(docToInsert)
+        return b64pdf
 
         
 async def insertB64(insertedDoc: ColDoc):

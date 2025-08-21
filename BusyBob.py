@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv
-import os, pymongo, asyncio, json, torch, pprint
+import os, pymongo, asyncio, json, torch, pprint, datetime
 from huggingface_hub import login
 from langchain_huggingface import HuggingFacePipeline, HuggingFaceEndpoint, ChatHuggingFace
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from typing import Any, Dict
 from transformers import pipeline
 from judgementLabels import labels, labelsLite
+from sendPDF import youveGotMail, CompanyInstance
+from ReportGeneration import GenerateDocument
 
 
 # STEPS FOR DATA PROCESSING: 
@@ -181,11 +183,90 @@ async def processResults(request: Request):
         doc["_id"] = str(doc["_id"])
         allMyData.append(doc)
     aggregatedNumData = aggregateNums(allMyData) # returns aggregated values for each number based response.
-    return {"data": aggregatedNumData}
+    #holy, what a lot of data to process.
+    # now that we have processed all of that info, we can feed it into our last AI.
+    strippedColl = collType[7:] + "_previousResults"
+    collection = db[strippedColl]
+    previousData = []
+    for doc in collection.find().sort('_id', pymongo.DESCENDING).limit(2):
+        doc["_id"] = str(doc["_id"])
+        previousData.append(str(doc))
+    # SEARCHING THE COMPANY
+    db = client.company_storage
+    collection = db.companies
+    resultingObject = collection.find_one(request['companyID'])
+    bobDeets = resultingObject["bobInfo"]["specifications"]
+    finalItem = await getAIResponse(aggregatedNumData, previousData, bobDeets["avoid"], bobDeets["tone"], bobDeets["description"])
+    #send our email and PDF document
+    today = datetime.date.today()
+    formatDay = today.strftime('%d-%m-%Y')
+    company = CompanyInstance(resultingObject["companyInfo"]["name"], formatDay)
+    # GENERATING PDF
+    pdfString = GenerateDocument(company.date, company.name, finalItem)
+    # SENDING MAIL
+    pdfName = 'companyResponse_' + formatDay + ".pdf"
+    collection = db.users
+    for item in resultingObject['adminAccounts']:
+        userToSpam = collection.find_one({'_id': item})
+        youveGotMail(userToSpam["email"], pdfString, pdfName, company)
+    # return a positive response.
+    return {
+        "response": "Success compiling! PDFs sent, should be recieved soon", 
+        "code": 200
+        }
+
+
+async def getAIResponse(currentData, previousData, avoidedWords, personalityDetails, descriptionRating):
+    print('recieved!! now getting response for: ', currentData, previousData)
+
+    inputString = f'''Your goal is to iterperet the following data and return a JSON object that meets the specified result structure.
+        Your name is Busy Bob, and factor in the following inclusions:
+        INCLUSIONS:
+        avoid the words: {avoidedWords}
+        your personality is: {personalityDetails}, but your primary focus should remain to be accurate and clear in your deductions.
+        On a scale of 1-10, you should be this descriptive: {descriptionRating}
+
+        Each dataset contains:
+        - summaryAggregate: 0-1, how useful the feedback is
+        - answerCleanlinessScore: 0-1, how readable/clear the answers were
+        - connotationAggregate: -1 to 1, how negative or positive the sentiment is
+        - allTagsSum: a dictionary of tags with scores (0-1) for presence.
+
+        Current dataset:
+        {currentData}
+
+        Past 2 datasets:
+        {previousData}
+
+        TASKS:
+        item0: just this list: {personalityDetails}
+        item1: Give a string that is a general description of key points and the most valuable feedback.
+        item2: Give me a number 1-100 that tells me the general company health rating.
+        item3: Identify the following trends from the last dataset: 
+        item3_1: is sentiment improving or worsening? Show this by returning a string response on the sentiment improvement, giving numbers in the reply as well to describe trends. USE PERCENTAGE POINTS!
+        item3_2: what are the major changes in tags? show this by describing in percentages the increase or decrease in certain feedback items over time.
+        item4: an overall summary string at the bottom for final thoughts, 
+
+
+
+        REQUIRED RESULT STRUCTURE:
+        data: {
+            "generalDescription": item1,
+            "toneNotes": personalityDetails,
+            "healthRating": item2,
+            "dataTrends": {
+                "sentimentTrend": item3_1
+                "tagTrends": item3_2
+            },
+            "finalThoughts": item4
+        }
+        RETURN JUST THIS JSON, NOTHING ELSE. RETURN IT IN THE PROPER SHAPE TO BE FORMATTED INTO A PYTHON DICTIONARY'''
+    resultItem = bobOfTest.invoke(inputString)
+    print('bob has given us: ', resultItem)
+    return dict(resultItem)
 
 def aggregateNums(fullDataObject):
-    finalitem = []
-    usedListyThing = {}
+    finalItem = {}
     for item in fullDataObject:
         print(item)
         summaryNumsToCompile = []
@@ -224,10 +305,11 @@ def aggregateNums(fullDataObject):
         finalCleanlinessSum = 0
         for cleanKey, cleanVal in summaryQuestionsToCompile['cleanliness'].items():
             if cleanKey == 'clean':
-                finalCleanlinessSum = finalCleanlinessSum + cleanVal*2 #weighted twice for clean full resp
+                finalCleanlinessSum = finalCleanlinessSum + cleanVal*1.5 #weighted for clean full resp
             else: # case of mild gibberish
                 finalCleanlinessSum = finalCleanlinessSum + cleanVal*0.75 #slightly lower weight on anything marked mild gibberish
         finalCleanlinessSum = finalCleanlinessSum / len(summaryQuestionsToCompile) #div length of question count
+        print('final cleanliness sum: ', finalCleanlinessSum)
         finalPosConSum = 0
         finalNegConSum = 0 
         for rateKey, rateVal in summaryQuestionsToCompile['connotation'].items():
@@ -238,26 +320,32 @@ def aggregateNums(fullDataObject):
         weightedConnotationSum = finalPosConSum - finalNegConSum
         print('weighted connotation sum: ', weightedConnotationSum)
         finalTagSums = {}
-        #handles tag numbers
+        #handles tag numbers TODO: maybe see if i can get this less than n^3
         for label in labelsLite:
             foundIndex = 0
+            labelAvg = 0
             for key, value in summaryQuestionsToCompile['tags']['labels'].items():
                 if key == label:
+                    for item in summaryQuestionsToCompile:
+                        labelAvg = labelAvg + item['tags']['scores'][foundIndex]
                     break
                 else:
                     foundIndex = foundIndex + 1
-            labelAvg = 0
-            for item in summaryQuestionsToCompile:
-                item['tags']['labels'][foundIndex]
+            labelAvg = labelAvg / len(summaryQuestionsToCompile)
             finalTagSums.update({
                 "labelAvg": labelAvg,
                 "label": label
             })
-
-
-
-
-    return fullDataObject
+            # all items handled, aggregation complete. Compile our final object
+        finalItem.update({
+            "summaryAggregate": finalSumNum,
+            "answerCleanlinessScore": finalCleanlinessSum,
+            "connotationAggregate": weightedConnotationSum,
+            "allTagsSum": finalTagSums
+        })
+        print(finalItem, "aggregation results")
+    print('all results!!!', finalItem)
+    return finalItem
 
 
 async def getGibberishSort(strValList):
@@ -323,141 +411,3 @@ def gatherTopThree(itemsToProcess):
     #top three found
     print('top3: ', topThree)
     return topThree
-
-
-
-# STEPS FOR RESPONSE GENERATION:
-# retrieve our preprocessed data.
-# do an aggregate of the data variables over all instances we have retrieved.
-# using the word content and reliability rating weight the responses (adjust it here!!)
-# aggregate the positivity and negative ratings as well for an overall vibe, as well as any outliers that are notable
-# (considerably bad or good experience)
-
-# THANK YOU CHAT GPT FOR FAKE SURVEY TESTING DATA :)
-# fake_survey_response = {
-#     "How would you rate your scheduling experience this week?": 9,
-#     "Were there any unnecessary schedule items?": "Nothing, everything was perfect",
-#     "What schedule additions would you like?": "More coffee breaks and free snacks please",
-#     "How fair was the workload this week? (heavily agree to heavily disagre)": "Heavily disagree",
-#     "Was assistance readily available when needed? (heavily agree to heavily disagre)": "Agree",
-#     "How accessible was your manager? (heavily agree to heavily disagre)": "Neutral",
-#     "How comfortable were check-ins with your manager? (heavily agree to heavily disagre)": "Heavily agree",
-#     "Were your scheduling needs met?": True,
-#     "Was your PTO respected?": False,
-#     "Any notes on scheduling issues?": "Manager randomly cancels meetings, confusing",
-    
-#     "How would you rate your work-from-home / hybrid balance? (heavily agree to heavily disagre)": "Neutral",
-#     "How did working from home affect you?": "Work ate all my time, but also had fun meetings lol",
-#     "How many breaks did you take this week?": "A few",
-#     "Do you have a remote or hybrid setup?": True,
-#     "How engaged were virtual meetings? (1-10)": 7,
-#     "How could meetings be improved?": "Make them shorter and fun 🤯",
-#     "Do you feel heard by management? (1-5)": 3,
-#     "Was management's response timely? (heavily agree to heavily disagre)": "Disagree",
-#     "Any notes on remote work?": "Zoom fatigue is real",
-#     "How often do you seek help when needed? (1-10)": 5,
-#     "Any general work-life notes?": "Everything is fine except sometimes the Wi-Fi fails",
-    
-#     # Company & group specifics
-#     "What would you like improved in the break room?": "I wish for better snacks in the break room",
-#     "Any other company feedback?": "",  # empty response
-#     "Any gibberish or random notes?": "asdf qwer zxcv",
-#     "Suggestions for more team events?": "We need more team events",
-#     "Any numeric nonsense for text fields?": "0",
-# }
-
-
-
-# async def testFunctions(request):
-#     intValList = {}
-#     strValList = {}
-#     print("POST endpoint hit!")
-#     # body = await request.json()
-#     print(f"Received data: {request}")
-#     # first we organize.
-#     for (key, value) in request.items():
-#         print(key, value)
-#         if(type(value) == int):
-#             intValList[key] = value
-#         else:
-#             strValList[key] = value
-#     # gibberish filter clears out any gibberish responses FIRST
-#     resultForGibFilter = await getGibberishSort(strValList)
-#     print('GIBRES: ', resultForGibFilter)
-#     #resort data, we don't care about the GIB rating value now that we used it to sort out bad responses.
-#     # item returned 'key': [{label: str, score: num}] CHANGING MY KEY TO BE THE ANSWER AND QUESTION TOGETHER, separated by '|'
-#     sentimentResult = []
-#     for (key, value) in resultForGibFilter.items():
-#         sentSplit = str(key).split('|')
-#         # only answer input 1 is answer 0 is question, split
-#         sentimentResult.append(bobEmotivePipeline(sentSplit[1]))
-#     # pos/neg sentiment read off phrases.
-#     print('SENTRES: ', sentimentResult)
-#     #tagging our replies 
-#     summarySentiment = []
-#     # it runs way too slow when the AI processes every survey response especially when custom fields are added.
-#     # combine into one string, average sentiment check on that without checking every label that unnessecarily.
-#     oneBigGib = ' '.join([str(gibRes) for gibRes in resultForGibFilter.keys()])
-#     summarySentiment.append(bobJudgementalPipeline(sequences=oneBigGib, candidate_labels=labels))
-#     print('SUMRES: ', summarySentiment)
-#     tagResult = []
-#     tagResult.append(bobJudgementalPipeline(sequences=[str(key) for key in resultForGibFilter.keys()], candidate_labels=labelsLite)) # longer process, lighter labels to help processing time
-#     print('TAGRES: ', tagResult)
-
-#     # run the algorithm to find top 3 responses in text
-#     flatTagResult = [item for sublist in tagResult for item in sublist]
-#     print('starting top3')
-#     top3Results = gatherTopThree(flatTagResult)
-
-#     #precleaning done! make item.
-#     fullQuestionItem = []
-#     currentIndex = 0
-#     for (key, value) in resultForGibFilter.items():
-#         # for each item that exists in our GibFilter, properly assign all results
-#         print(key, type(value), value)
-#         print(sentimentResult[currentIndex])
-#         print(tagResult[0][currentIndex])
-#         pocketValue = value[0]
-#         pocketSentiment = sentimentResult[currentIndex][0]
-#         pocketTag = tagResult[0][currentIndex]
-#         fullQuestionItem.append({key: {
-#             'cleanliness': {
-#                 'label': pocketValue['label'],
-#                 'score': pocketValue['score']
-#             },
-#             'connotation': {
-#                 'label': pocketSentiment['label'],
-#                 'score': pocketSentiment['score']
-#             },
-#             'tags': {
-#                 'labels': pocketTag['labels'],
-#                 'scores': pocketTag['scores']
-#             }
-#         }})
-#         currentIndex = currentIndex + 1
-#     myNewResult = {
-#         "summarySentiment": {
-#             "values": summarySentiment[0]['labels'],
-#             "scores": summarySentiment[0]['scores']
-#         },
-#         "topThreeResults": top3Results,
-#         "fullQuestions": fullQuestionItem
-#     }
-#     # push to mongoDB
-#     client = pymongo.MongoClient('mongodb://localhost:27017?directConnection=true')
-#     db = client.survey_data
-#     collection = db.responses
-#     newResponse = collection.insert_one(myNewResult).inserted_id
-#     # return code
-#     if newResponse:
-#         return {
-#             "status": 200,
-#             "code": "successful completion"
-#         }
-#     else:
-#         return {
-#             "status": 400,
-#             "code": "failed to push data changes"
-#         }
-
-# asyncio.run(testFunctions(fake_survey_response))
