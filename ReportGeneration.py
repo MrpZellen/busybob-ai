@@ -84,5 +84,3 @@ async def insertB64(insertedDoc: ColDoc):
         return False
 
 
-
-asyncio.run(GenerateDocument(datetime.date.today(), 'BOBWHO', []))

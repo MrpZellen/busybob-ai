@@ -12,7 +12,7 @@ class CompanyInstance:
         self.date = date
 
 templateEnvironment = Environment(
-    loader=FileSystemLoader('busybob/html'),
+    loader=FileSystemLoader('html'),
     autoescape=select_autoescape(['html'])
 )
 template = templateEnvironment.get_template('emailHeader.html')
@@ -40,8 +40,3 @@ async def getB64(companyID: str):
     collection = db.pdf_store
     result = collection.find_one(filter={'companyID': companyID})
     return result
-
-foundData = asyncio.run(getB64('COM-newtest'))
-now = datetime.date.today()
-companyTest = CompanyInstance('johnco', now.strftime('%d/%m/%y'))
-youveGotMail('jshull@neumont.edu', foundData['pdfStore'][0]['PDFstring'], 'data.pdf', companyTest)

@@ -57,8 +57,8 @@ bobJudgementalPipeline = pipeline("zero-shot-classification", model="valhalla/di
 
 # THIS BOB PROVIDES A SUMMARY OF THE INFORMATION ITS FED, AGGREGATE SCORES ON QUESTIONS. 
 bobOfTest = HuggingFaceEndpoint(
-    repo_id="meta-llama/Meta-Llama-3-8B-Instruct",
-    task="conversational",
+    repo_id="google/flan-t5-large",
+    task="text-generation",
     max_new_tokens=100,
     do_sample=False,
 )
@@ -183,6 +183,7 @@ async def processResults(request: Request):
         doc["_id"] = str(doc["_id"])
         allMyData.append(doc)
     aggregatedNumData = aggregateNums(allMyData) # returns aggregated values for each number based response.
+    print('holy aggregate lois')
     #holy, what a lot of data to process.
     # now that we have processed all of that info, we can feed it into our last AI.
     strippedColl = collType[7:] + "_previousResults"
@@ -193,16 +194,26 @@ async def processResults(request: Request):
         previousData.append(str(doc))
     # SEARCHING THE COMPANY
     db = client.company_storage
+    print(db.name)
     collection = db.companies
-    resultingObject = collection.find_one(request['companyID'])
-    bobDeets = resultingObject["bobInfo"]["specifications"]
+    print(collection.name)
+    resultingObject = collection.find_one({"companyID": collType[7:]})
+    print(resultingObject, collType[7:])
+    if resultingObject:
+        bobDeets = resultingObject["bobInfo"]["specifications"]
+    else:
+        bobDeets = {
+            "avoid": "",
+            "tone": "serious",
+            "description": 5
+        }
     finalItem = await getAIResponse(aggregatedNumData, previousData, bobDeets["avoid"], bobDeets["tone"], bobDeets["description"])
     #send our email and PDF document
     today = datetime.date.today()
     formatDay = today.strftime('%d-%m-%Y')
     company = CompanyInstance(resultingObject["companyInfo"]["name"], formatDay)
     # GENERATING PDF
-    pdfString = GenerateDocument(company.date, company.name, finalItem)
+    pdfString = await GenerateDocument(company.date, company.name, finalItem)
     # SENDING MAIL
     pdfName = 'companyResponse_' + formatDay + ".pdf"
     collection = db.users
@@ -210,10 +221,11 @@ async def processResults(request: Request):
         userToSpam = collection.find_one({'_id': item})
         youveGotMail(userToSpam["email"], pdfString, pdfName, company)
     # return a positive response.
+    print('CAH CAH IM A BIRD PETAH')
     return {
         "response": "Success compiling! PDFs sent, should be recieved soon", 
         "code": 200
-        }
+    }
 
 
 async def getAIResponse(currentData, previousData, avoidedWords, personalityDetails, descriptionRating):
@@ -229,7 +241,7 @@ async def getAIResponse(currentData, previousData, avoidedWords, personalityDeta
         Each dataset contains:
         - summaryAggregate: 0-1, how useful the feedback is
         - answerCleanlinessScore: 0-1, how readable/clear the answers were
-        - connotationAggregate: -1 to 1, how negative or positive the sentiment is
+        - connotationAggregate: how negative or positive the sentiment is, is calculated by subtracting total positive from total negative, overwhelmingly positive would be above 2, below 2 is positive, below 0.7 to -0.7 is relatively neutral, between -0.7 and -2 is negative, and lowe is overwhelmingly negative
         - allTagsSum: a dictionary of tags with scores (0-1) for presence.
 
         Current dataset:
@@ -250,16 +262,16 @@ async def getAIResponse(currentData, previousData, avoidedWords, personalityDeta
 
 
         REQUIRED RESULT STRUCTURE:
-        data: {
+        data: {{
             "generalDescription": item1,
             "toneNotes": personalityDetails,
             "healthRating": item2,
-            "dataTrends": {
+            "dataTrends": {{
                 "sentimentTrend": item3_1
                 "tagTrends": item3_2
-            },
+            }},
             "finalThoughts": item4
-        }
+        }}
         RETURN JUST THIS JSON, NOTHING ELSE. RETURN IT IN THE PROPER SHAPE TO BE FORMATTED INTO A PYTHON DICTIONARY'''
     resultItem = bobOfTest.invoke(inputString)
     print('bob has given us: ', resultItem)
@@ -268,75 +280,79 @@ async def getAIResponse(currentData, previousData, avoidedWords, personalityDeta
 def aggregateNums(fullDataObject):
     finalItem = {}
     for item in fullDataObject:
-        print(item)
+        print('CHECKIN OUR ITEM OUT: ', item)
         summaryNumsToCompile = []
         summaryQuestionsToCompile = {}
         for key, value in item.items():
+            print('current key checked: ', key)
             if key == '_id' or key == 'topThreeResults': # TODO: FIX TOP THREE RESULTS
                 continue
             if key == 'summarySentiment':
-                summaryNumsToCompile.append(value[1])
+                summaryNumsToCompile.append(value)
             if key == 'fullQuestions':
-                for quesKey, quesItem in value.items():
-                    summaryQuestionsToCompile.update({
+                for quesItem in value:
+                    if not quesItem:
+                        continue
+                    print(quesItem)
+                    innerKey, inner = next(iter(quesItem.items()))
+                    summaryQuestionsToCompile[innerKey] = {
                         "cleanliness": {
-                            "label": quesItem['cleanliness']['label'],
-                            "score": quesItem['cleanliness']['score']
+                            "label": inner['cleanliness']['label'],
+                            "score": inner['cleanliness']['score']
                         },
                         "connotation": {
-                            "label": quesItem['connotation']['label'],
-                            "score": quesItem['connotation']['score']
+                            "label": inner['connotation']['label'],
+                            "score": inner['connotation']['score']
                         },
                         "tags": {
-                            "labels": quesItem['tags']['labels'],
-                            "scores": quesItem['tags']['scores']
+                            "labels": inner['tags']['labels'],
+                            "scores": inner['tags']['scores']
                         }
-                    })
+                    }
         # handle summary numbers
+        print('we outty')
         finalSumNum = []
         for index in range(len(summaryNumsToCompile)):
             summatedValue = 0
             for value in summaryNumsToCompile:
-                summatedValue = summatedValue + value[index]
-            summatedValue = summatedValue / range(len(summaryNumsToCompile))
+                print(value)
+                summatedValue = summatedValue + value["scores"][index]
+            summatedValue = summatedValue / len(summaryNumsToCompile)
             finalSumNum.append(summatedValue)
         print(finalSumNum, 'final sum num')
         # handle summary questions
         finalCleanlinessSum = 0
-        for cleanKey, cleanVal in summaryQuestionsToCompile['cleanliness'].items():
-            if cleanKey == 'clean':
-                finalCleanlinessSum = finalCleanlinessSum + cleanVal*1.5 #weighted for clean full resp
+        for _, currentItem in summaryQuestionsToCompile.items():
+            cleanVal = currentItem['cleanliness']
+            print(cleanVal)
+            print(cleanVal['label'])
+            if cleanVal['label'] == 'clean':
+                finalCleanlinessSum = finalCleanlinessSum + cleanVal['score']*1.5 #weighted for clean full resp
             else: # case of mild gibberish
-                finalCleanlinessSum = finalCleanlinessSum + cleanVal*0.75 #slightly lower weight on anything marked mild gibberish
-        finalCleanlinessSum = finalCleanlinessSum / len(summaryQuestionsToCompile) #div length of question count
+                finalCleanlinessSum = finalCleanlinessSum + cleanVal['score']*0.75 #slightly lower weight on anything marked mild gibberish
+        finalCleanlinessSum = finalCleanlinessSum / (len(summaryQuestionsToCompile)) #div length of question count
         print('final cleanliness sum: ', finalCleanlinessSum)
         finalPosConSum = 0
         finalNegConSum = 0 
-        for rateKey, rateVal in summaryQuestionsToCompile['connotation'].items():
-            if rateKey == 'POSITIVE':
-                finalPosConSum = finalPosConSum + rateVal
+        for _, ratedValue in summaryQuestionsToCompile.items():
+            rateKey = ratedValue['connotation']
+            if rateKey['label'] == 'POSITIVE':
+                finalPosConSum = finalPosConSum + rateKey['score']
             else: # its negative
-                finalNegConSum = finalNegConSum + (rateVal*0.6) #tone down negative weighting
+                finalNegConSum = finalNegConSum + (rateKey['score']*0.8) #tone down negative weighting
         weightedConnotationSum = finalPosConSum - finalNegConSum
         print('weighted connotation sum: ', weightedConnotationSum)
-        finalTagSums = {}
+        finalTagSums = {label: 0.0 for label in labelsLite}
+        for _, item in summaryQuestionsToCompile.items():
+            tags = item['tags']
+            for label, score in zip(tags['labels'], tags['scores']):
+                if label in finalTagSums:
+                    finalTagSums[label] = finalTagSums[label] + score
         #handles tag numbers TODO: maybe see if i can get this less than n^3
-        for label in labelsLite:
-            foundIndex = 0
-            labelAvg = 0
-            for key, value in summaryQuestionsToCompile['tags']['labels'].items():
-                if key == label:
-                    for item in summaryQuestionsToCompile:
-                        labelAvg = labelAvg + item['tags']['scores'][foundIndex]
-                    break
-                else:
-                    foundIndex = foundIndex + 1
-            labelAvg = labelAvg / len(summaryQuestionsToCompile)
-            finalTagSums.update({
-                "labelAvg": labelAvg,
-                "label": label
-            })
-            # all items handled, aggregation complete. Compile our final object
+        numQuestions = len(summaryQuestionsToCompile)
+        for label in finalTagSums:
+            finalTagSums[label] = finalTagSums[label] / numQuestions
+        # all items handled, aggregation complete. Compile our final object
         finalItem.update({
             "summaryAggregate": finalSumNum,
             "answerCleanlinessScore": finalCleanlinessSum,
