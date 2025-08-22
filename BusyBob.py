@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 import os, pymongo, asyncio, json, torch, pprint, datetime
 from huggingface_hub import login
 from langchain_huggingface import HuggingFacePipeline, HuggingFaceEndpoint, ChatHuggingFace
+from langchain_core.messages import HumanMessage, SystemMessage
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Dict
@@ -56,12 +57,14 @@ bobJudgementalPipeline = pipeline("zero-shot-classification", model="valhalla/di
 # NO BOB FOR AGGREGATION, DUH DOY.
 
 # THIS BOB PROVIDES A SUMMARY OF THE INFORMATION ITS FED, AGGREGATE SCORES ON QUESTIONS. 
-bobOfTest = HuggingFaceEndpoint(
-    repo_id="google/flan-t5-large",
-    task="text-generation",
-    max_new_tokens=100,
-    do_sample=False,
+llm = HuggingFaceEndpoint(
+    repo_id="google/flan-t5-base",
+    task="text2text-generation",
+    max_new_tokens=1000,
+    do_sample=True,
+    temperature=0.7,
 )
+bobOfTest = ChatHuggingFace(llm=llm)
 
 async def post_root(request: Request):
     intValList = {}
@@ -168,6 +171,7 @@ async def post_root(request: Request):
 async def processResults(request: Request):
     # this is called when the cron weekly crons all over and decides its time to process results and close the survey.
     print('CRON HAS PROCESSED. WE ARE BOBLINE.')
+
     collType = request['collection']
     print(collType)
     # get mongo items.
@@ -207,7 +211,7 @@ async def processResults(request: Request):
             "tone": "serious",
             "description": 5
         }
-    finalItem = getAIResponse(aggregatedNumData, previousData, bobDeets["avoid"], bobDeets["tone"], bobDeets["description"])
+    finalItem = await getAIResponse(aggregatedNumData, previousData, bobDeets["avoid"], bobDeets["tone"], bobDeets["description"])
     #send our email and PDF document
     today = datetime.date.today()
     formatDay = today.strftime('%d-%m-%Y')
@@ -231,54 +235,47 @@ async def processResults(request: Request):
 async def getAIResponse(currentData, previousData, avoidedWords, personalityDetails, descriptionRating):
     print('recieved!! now getting response for: ', currentData, previousData)
 
-    inputString = f'''Your goal is to iterperet the following data and return a JSON object that meets the specified result structure.
-        Your name is Busy Bob, and factor in the following inclusions:
-        INCLUSIONS:
-        avoid the words: {avoidedWords}
-        your personality is: {personalityDetails}, but your primary focus should remain to be accurate and clear in your deductions.
-        On a scale of 1-10, you should be this descriptive: {descriptionRating}
+    message = f"""
+        You are Busy Bob, a survey analysis expert. Your personality is: {personalityDetails}
+        Avoid using these words: {avoidedWords}
+        Descriptiveness level: {descriptionRating}/10
 
-        Each dataset contains:
-        - summaryAggregate: 0-1, how useful the feedback is
-        - answerCleanlinessScore: 0-1, how readable/clear the answers were
-        - connotationAggregate: how negative or positive the sentiment is, is calculated by subtracting total positive from total negative, overwhelmingly positive would be above 2, below 2 is positive, below 0.7 to -0.7 is relatively neutral, between -0.7 and -2 is negative, and lowe is overwhelmingly negative
-        - allTagsSum: a dictionary of tags with scores (0-1) for presence.
+        Analyze this survey data and return a JSON object.
 
-        Current dataset:
-        {currentData}
+        CURRENT DATA:
+        {str(currentData)}
 
-        Past 2 datasets:
-        {previousData}
+        PREVIOUS DATA: 
+        {str(previousData)}
 
-        TASKS:
-        item0: just this list: {personalityDetails}
-        item1: Give a string that is a general description of key points and the most valuable feedback.
-        item2: Give me a number 1-100 that tells me the general company health rating.
-        item3: Identify the following trends from the last dataset: 
-        item3_1: is sentiment improving or worsening? Show this by returning a string response on the sentiment improvement, giving numbers in the reply as well to describe trends. USE PERCENTAGE POINTS!
-        item3_2: what are the major changes in tags? show this by describing in percentages the increase or decrease in certain feedback items over time.
-        item4: an overall summary string at the bottom for final thoughts, 
+        DATA STRUCTURE EXPLANATION:
+        - summaryAggregate: 0-1 (feedback usefulness)
+        - answerCleanlinessScore: 0-1 (readability)  
+        - connotationAggregate: sentiment score (positive > 2, neutral -0.7 to 0.7, negative < -0.7)
+        - allTagsSum: tag presence scores (0-1)
 
-
-
-        REQUIRED RESULT STRUCTURE:
-        data: {{
-            "generalDescription": item1,
-            "toneNotes": personalityDetails,
-            "healthRating": item2,
+        REQUIRED JSON OUTPUT:
+        {{
+            "generalDescription": "Brief summary of key feedback points",
+            "toneNotes": "{personalityDetails}",
+            "healthRating": 75,
             "dataTrends": {{
-                "sentimentTrend": item3_1
-                "tagTrends": item3_2
+                "sentimentTrend": "Sentiment improved by X percentage points compared to previous period",
+                "tagTrends": "Work-life balance mentions increased by X%, communication decreased by Y%"
             }},
-            "finalThoughts": item4
+            "finalThoughts": "Overall assessment and recommendations"
         }}
-        RETURN JUST THIS JSON, NOTHING ELSE. RETURN IT IN THE PROPER SHAPE TO BE FORMATTED INTO A PYTHON DICTIONARY'''
-    resultItem = bobOfTest.invoke(inputString)
+
+        Return ONLY the JSON object above, no other text.
+        """
+    print('straight up invoking')
+    resultItem = asyncio.wait_for(bobOfTest.invoke(message))
     print('bob has given us: ', resultItem)
-    return dict(resultItem)
+    return resultItem
 
 def aggregateNums(fullDataObject):
-    finalItem = {}
+    finalItem = []
+    print('length: ', len(fullDataObject))
     for item in fullDataObject:
         print('CHECKIN OUR ITEM OUT: ', item)
         summaryNumsToCompile = []
@@ -294,21 +291,24 @@ def aggregateNums(fullDataObject):
                     if not quesItem:
                         continue
                     print(quesItem)
+                    print("Trying to unpack quesItem:", quesItem)
                     innerKey, inner = next(iter(quesItem.items()))
-                    summaryQuestionsToCompile[innerKey] = {
-                        "cleanliness": {
-                            "label": inner['cleanliness']['label'],
-                            "score": inner['cleanliness']['score']
-                        },
-                        "connotation": {
-                            "label": inner['connotation']['label'],
-                            "score": inner['connotation']['score']
-                        },
-                        "tags": {
-                            "labels": inner['tags']['labels'],
-                            "scores": inner['tags']['scores']
+                    print("Unpacked:", innerKey)
+                    if inner:
+                        summaryQuestionsToCompile[innerKey] = {
+                            "cleanliness": {
+                                "label": inner['cleanliness']['label'],
+                                "score": inner['cleanliness']['score']
+                            },
+                            "connotation": {
+                                "label": inner['connotation']['label'],
+                                "score": inner['connotation']['score']
+                            },
+                            "tags": {
+                                "labels": inner['tags']['labels'],
+                                "scores": inner['tags']['scores']
+                            }
                         }
-                    }
         # handle summary numbers
         print('we outty')
         finalSumNum = []
@@ -329,7 +329,7 @@ def aggregateNums(fullDataObject):
             if cleanVal['label'] == 'clean':
                 finalCleanlinessSum = finalCleanlinessSum + cleanVal['score']*1.5 #weighted for clean full resp
             else: # case of mild gibberish
-                finalCleanlinessSum = finalCleanlinessSum + cleanVal['score']*0.75 #slightly lower weight on anything marked mild gibberish
+                finalCleanlinessSum = finalCleanlinessSum + cleanVal['score']*0.9 #slightly lower weight on anything marked mild gibberish
         finalCleanlinessSum = finalCleanlinessSum / (len(summaryQuestionsToCompile)) #div length of question count
         print('final cleanliness sum: ', finalCleanlinessSum)
         finalPosConSum = 0
@@ -353,13 +353,15 @@ def aggregateNums(fullDataObject):
         for label in finalTagSums:
             finalTagSums[label] = finalTagSums[label] / numQuestions
         # all items handled, aggregation complete. Compile our final object
-        finalItem.update({
+        resultedItem = {
             "summaryAggregate": finalSumNum,
             "answerCleanlinessScore": finalCleanlinessSum,
             "connotationAggregate": weightedConnotationSum,
             "allTagsSum": finalTagSums
-        })
-        print(finalItem, "aggregation results")
+        }
+        print(f'Item - APPENDING TO FINAL ITEM: ', resultedItem)
+        finalItem.append(resultedItem)
+        print(f'Item - finalItem length after append: ', len(finalItem))
     print('all results!!!', finalItem)
     return finalItem
 
