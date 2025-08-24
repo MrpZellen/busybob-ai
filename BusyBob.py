@@ -7,7 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Dict
-from transformers import pipeline
+from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
 from judgementLabels import labels, labelsLite
 from sendPDF import youveGotMail, CompanyInstance
 from ReportGeneration import GenerateDocument
@@ -56,15 +56,27 @@ bobJudgementalPipeline = pipeline("zero-shot-classification", model="valhalla/di
 
 # NO BOB FOR AGGREGATION, DUH DOY.
 
-# THIS BOB PROVIDES A SUMMARY OF THE INFORMATION ITS FED, AGGREGATE SCORES ON QUESTIONS. 
-llm = HuggingFaceEndpoint(
-    repo_id="google/flan-t5-base",
-    task="text2text-generation",
-    max_new_tokens=1000,
+# THIS BOB PROVIDES A SUMMARY OF THE INFORMATION ITS FED, AGGREGATE SCORES ON QUESTIONS.
+
+tokenizer = AutoTokenizer.from_pretrained("nvidia/Nemotron-Mini-4B-Instruct")
+bobOfTest = AutoModelForCausalLM.from_pretrained("nvidia/Nemotron-Mini-4B-Instruct", device_map="auto" if torch.cuda.is_available() else None)
+# FLAN IS EVIL GOOGLE
+
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+bobTestPipeline = pipeline(
+    "text-generation",
+    model="nvidia/Nemotron-Mini-4B-Instruct",
+    tokenizer=tokenizer,
+    torch_dtype=torch.float16,
+    device_map="auto" if torch.cuda.is_available() else None,
+    max_new_tokens=300,
+    temperature=0.3,
     do_sample=True,
-    temperature=0.7,
+    pad_token_id=tokenizer.eos_token_id
 )
-bobOfTest = ChatHuggingFace(llm=llm)
 
 async def post_root(request: Request):
     intValList = {}
@@ -213,7 +225,7 @@ async def processResults(request: Request):
         }
     finalItem = await getAIResponse(aggregatedNumData, previousData, bobDeets["avoid"], bobDeets["tone"], bobDeets["description"])
     #send our email and PDF document
-    today = datetime.date.today()
+    today = datetime.datetime.now()
     formatDay = today.strftime('%d-%m-%Y')
     company = CompanyInstance(resultingObject["companyInfo"]["name"], formatDay)
     # GENERATING PDF
@@ -242,19 +254,18 @@ async def getAIResponse(currentData, previousData, avoidedWords, personalityDeta
 
         Analyze this survey data and return a JSON object.
 
-        CURRENT DATA:
-        {str(currentData)}
-
-        PREVIOUS DATA: 
-        {str(previousData)}
 
         DATA STRUCTURE EXPLANATION:
-        - summaryAggregate: 0-1 (feedback usefulness)
-        - answerCleanlinessScore: 0-1 (readability)  
-        - connotationAggregate: sentiment score (positive > 2, neutral -0.7 to 0.7, negative < -0.7)
-        - allTagsSum: tag presence scores (0-1)
+        - avgSummaryScore: 0-1 (feedback usefulness, even 0.1 is notable)
+        - avgCleanlinessScore: 0-1 (readability)  
+        - avgConnotationScore: sentiment score (positive > 2, neutral -0.7 to 0.7, negative < -0.7)
+        - avgTagScores: tag presence scores (0-1, consiter 0.05 or higher as substantial enough)
 
-        REQUIRED JSON OUTPUT:
+        Analyze the following survey data and respond with ONLY a valid JSON object:
+        THIS WEEKS DATA: {str(currentData)}
+        LAST TWO WEEKS: {str(previousData)}
+
+        RETURN THIS EXACT JSON FORMAT PLEASE, based on the above data and your instructions.
         {{
             "generalDescription": "Brief summary of key feedback points",
             "toneNotes": "{personalityDetails}",
@@ -265,11 +276,24 @@ async def getAIResponse(currentData, previousData, avoidedWords, personalityDeta
             }},
             "finalThoughts": "Overall assessment and recommendations"
         }}
-
-        Return ONLY the JSON object above, no other text.
         """
-    print('straight up invoking')
-    resultItem = asyncio.wait_for(bobOfTest.invoke(message))
+    print(message)
+    response = await asyncio.to_thread(
+            bobTestPipeline,
+            message,
+            max_new_tokens=250,
+            temperature=0.2,
+            do_sample=True,
+            return_full_text=False,  # Only return generated text
+            pad_token_id=tokenizer.eos_token_id
+        )
+    preJSONResponse = response[0]['generated_text'].strip()
+    try:
+        resultItem = json.loads(preJSONResponse)
+    except Exception as e:
+        print(e)
+        print('the above went wrong!')
+        resultItem = preJSONResponse
     print('bob has given us: ', resultItem)
     return resultItem
 
@@ -362,8 +386,36 @@ def aggregateNums(fullDataObject):
         print(f'Item - APPENDING TO FINAL ITEM: ', resultedItem)
         finalItem.append(resultedItem)
         print(f'Item - finalItem length after append: ', len(finalItem))
-    print('all results!!!', finalItem)
-    return finalItem
+    #squish even more
+    finalConnotation = 0
+    finalCleanliness = 0
+    finalSummary = 0
+    finalTags  = {}
+    for item in (finalItem):
+        finalConnotation = finalConnotation + (item["connotationAggregate"] * item["answerCleanlinessScore"])
+        finalCleanliness = finalCleanliness + item["answerCleanlinessScore"]
+        finalSummary = finalSummary + (item['summaryAggregate'][0] * item["answerCleanlinessScore"])
+        for key, value in item["allTagsSum"].items():
+            print(key, 'CURRENTKEY')
+            if key in finalTags:
+                finalTags[key] += value
+            else:
+                finalTags[key] = value
+        print('current clean sum con: ', finalCleanliness, finalSummary, finalConnotation)
+        print(finalTags)
+    finalConnotation /= len(fullDataObject)
+    finalCleanliness /= len(fullDataObject)
+    finalSummary /= len(fullDataObject)
+    for key, value in finalTags.items():
+        finalTags[key] /= 3
+    ourLastItemForRealThisTime = {
+        "avgSummaryScore": finalSummary,
+        "avgCleanlinessScore": finalCleanliness,
+        "avgConnotationScore": finalConnotation,
+        "avgTagScores": finalTags
+    }
+    print('all results!!!', ourLastItemForRealThisTime)
+    return ourLastItemForRealThisTime
 
 
 async def getGibberishSort(strValList):
