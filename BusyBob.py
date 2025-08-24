@@ -7,7 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Dict
-from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
+from transformers import pipeline, T5Tokenizer, T5ForConditionalGeneration
 from judgementLabels import labels, labelsLite
 from sendPDF import youveGotMail, CompanyInstance
 from ReportGeneration import GenerateDocument
@@ -43,14 +43,30 @@ class SurveyData(BaseModel):
 #|     REGISTRY       |
 #|--------------------|
 
-# THIS BOB READS POSITIVE AND NEGATIVE SENTIMENT
-bobEmotivePipeline = pipeline("sentiment-analysis", model="distilbert/distilbert-base-uncased-finetuned-sst-2-english")
+bobEmotivePipeline = None
+bobGibberishPipeline = None
+bobJudgementalPipeline = None
 
-# THIS BOB READS FOR GIBBERISH ANSWERS TO FILTER OUT
-bobGibberishPipeline = pipeline("text-classification", model="madhurjindal/autonlp-Gibberish-Detector-492513457")
+def get_emotive_pipeline():
+    global bobEmotivePipeline
+    if bobEmotivePipeline is None:
+        print("Loading sentiment analysis model...")
+        bobEmotivePipeline = pipeline("sentiment-analysis", model="distilbert/distilbert-base-uncased-finetuned-sst-2-english")
+    return bobEmotivePipeline
 
-# THIS BOB TAGS REMAINING RESPONSES WITH RELEVANT MENTIONS
-bobJudgementalPipeline = pipeline("zero-shot-classification", model="valhalla/distilbart-mnli-12-1")
+def get_gibberish_pipeline():
+    global bobGibberishPipeline  
+    if bobGibberishPipeline is None:
+        print("Loading gibberish detection model...")
+        bobGibberishPipeline = pipeline("text-classification", model="madhurjindal/autonlp-Gibberish-Detector-492513457")
+    return bobGibberishPipeline
+
+def get_judgement_pipeline():
+    global bobJudgementalPipeline
+    if bobJudgementalPipeline is None:
+        print("Loading zero-shot classification model...")
+        bobJudgementalPipeline = pipeline("zero-shot-classification", model="valhalla/distilbart-mnli-12-1")
+    return bobJudgementalPipeline
 
 # NO BOB FOR ANSWER QUALITY, MATH THAT MYSELF FOR WEIGHTING OFF OF EXISTING DATA.
 
@@ -58,23 +74,26 @@ bobJudgementalPipeline = pipeline("zero-shot-classification", model="valhalla/di
 
 # THIS BOB PROVIDES A SUMMARY OF THE INFORMATION ITS FED, AGGREGATE SCORES ON QUESTIONS.
 
-tokenizer = AutoTokenizer.from_pretrained("nvidia/Nemotron-Mini-4B-Instruct")
-bobOfTest = AutoModelForCausalLM.from_pretrained("nvidia/Nemotron-Mini-4B-Instruct", device_map="auto" if torch.cuda.is_available() else None)
-# FLAN IS EVIL GOOGLE
 
-if tokenizer.pad_token is None:
-    tokenizer.pad_token = tokenizer.eos_token
-bobTestPipeline = pipeline(
-    "text-generation",
-    model="nvidia/Nemotron-Mini-4B-Instruct",
-    tokenizer=tokenizer,
-    torch_dtype=torch.float16,
-    device_map="auto" if torch.cuda.is_available() else None,
-    max_new_tokens=300,
-    temperature=0.3,
-    do_sample=True,
-    pad_token_id=tokenizer.eos_token_id
-)
+_model_loaded = False
+bobTestPipeline = None
+
+def load_model():
+    global _model_loaded, bobTestPipeline
+    if _model_loaded:
+        return bobTestPipeline
+    
+    print("Loading model for the first time...")
+
+    llm = HuggingFaceEndpoint(
+        repo_id="meta-llama/Meta-Llama-3-8B-Instruct",
+        task="conversational",
+        max_new_tokens=100,
+        do_sample=False,
+    )
+    bobTestPipeline = ChatHuggingFace(llm=llm)
+    _model_loaded = True
+    return bobTestPipeline
 
 async def post_root(request: Request):
     intValList = {}
@@ -107,7 +126,7 @@ async def post_root(request: Request):
     for (key, value) in resultForGibFilter.items():
         sentSplit = str(key).split('|')
         # only answer input 1 is answer 0 is question, split
-        sentimentResult.append(bobEmotivePipeline(sentSplit[1]))
+        sentimentResult.append(get_emotive_pipeline(sentSplit[1]))
     # pos/neg sentiment read off phrases.
     print('SENTRES: ', sentimentResult)
     #tagging our replies 
@@ -115,10 +134,10 @@ async def post_root(request: Request):
     # it runs way too slow when the AI processes every survey response especially when custom fields are added.
     # combine into one string, average sentiment check on that without checking every label that unnessecarily.
     oneBigGib = ' '.join([str(gibRes) for gibRes in resultForGibFilter.keys()])
-    summarySentiment.append(bobJudgementalPipeline(sequences=oneBigGib, candidate_labels=labels))
+    summarySentiment.append(get_judgement_pipeline(sequences=oneBigGib, candidate_labels=labels))
     print('SUMRES: ', summarySentiment)
     tagResult = []
-    tagResult.append(bobJudgementalPipeline(sequences=[str(key) for key in resultForGibFilter.keys()], candidate_labels=labelsLite)) # longer process, lighter labels to help processing time
+    tagResult.append(get_judgement_pipeline(sequences=[str(key) for key in resultForGibFilter.keys()], candidate_labels=labelsLite)) # longer process, lighter labels to help processing time
     print('TAGRES: ', tagResult)
 
     # run the algorithm to find top 3 responses in text
@@ -243,41 +262,23 @@ async def processResults(request: Request):
 
 
 async def getAIResponse(currentData, previousData, avoidedWords, personalityDetails, descriptionRating):
+    bobTestPipeline = load_model()
     print('recieved!! now getting response for: ', currentData, previousData)
+    top3TagScores = dict(sorted(currentData['avgTagScores'].items(), key=lambda x: x[1], reverse=True)[:3])
 
-    message = f"""
-        You are Busy Bob, a survey analysis expert. Your personality is: {personalityDetails}
-        Avoid using these words: {avoidedWords}
-        Descriptiveness level: {descriptionRating}/10
-
-        Analyze this survey data and return a JSON object.
-
-
-        DATA STRUCTURE EXPLANATION:
-        - avgSummaryScore: 0-1 (feedback usefulness, even 0.1 is notable)
-        - avgCleanlinessScore: 0-1 (readability)  
-        - avgConnotationScore: sentiment score (positive > 2, neutral -0.7 to 0.7, negative < -0.7)
-        - avgTagScores: tag presence scores (0-1, consiter 0.05 or higher as substantial enough)
-
-        Analyze the following survey data and respond with ONLY a valid JSON object:
-        THIS WEEKS DATA: {str(currentData)}
-        LAST TWO WEEKS: {str(previousData)}
-
-        RETURN THIS EXACT JSON FORMAT PLEASE, based on the above data and your instructions.
-        {{
-            "generalDescription": "Brief summary of key feedback points",
-            "toneNotes": "{personalityDetails}",
-            "healthRating": 75,
-            "dataTrends": {{
-                "sentimentTrend": "Sentiment improved by X percentage points compared to previous period",
-                "tagTrends": "Work-life balance mentions increased by X%, communication decreased by Y%"
-            }},
-            "finalThoughts": "Overall assessment and recommendations"
-        }}
-        """
-    print(message)
-    response = bobTestPipeline({"role": "system", "content": message})
-    preJSONResponse = tokenizer.decode(response[0])
+    message = f"""You are an expert survey analyst.  Use the tone: {personalityDetails}, though don't go extreme with it. On a scale of 1-10, describe at {descriptionRating}, avoid the words: {avoidedWords}. """
+    color = await bobTestPipeline.ainvoke('give me a random color.')
+    print(color)
+    generalDescription = await bobTestPipeline.ainvoke(message + f'''from 0 (low feedback) to 1 (high feedback), {currentData['avgSummaryScore']} is the overall score of all surveys. {top3TagScores} is the top 3 feedback items with scores (0 as low and 1 as high, that rates how much that feedback was brought up.), and {currentData['avgConnotationScore']} is the positivity or negativity of the surveys bigger positive number = more positive, and vice versa. WITHOUT REPLYING WITH NUMBERS, summarize your findings. Keep it shorter, lightly considering description level.''')
+    print(generalDescription)
+    healthRating = await bobTestPipeline.ainvoke(message + f'''\nconsidering the description of the company as {generalDescription}, rate on a score of 1-100 on how healthy this company is. 
+                                   Factor in the positivity of the essays overall, with negative numbers being how negative responese are, and vice versa.''')
+    print(healthRating)
+    finalThoughts = await bobTestPipeline.ainvoke(message + f'''\nWITHOUT REPLYING WITH NUMBERS, Give your final thoughts on how to best improve this company, considering the description of: {generalDescription} AS WELL AS the health rating of {healthRating}, still factor in description rating, but keep it a little briefer.''')
+    print(finalThoughts)
+    response = ''
+    print(response)
+    preJSONResponse = response[0]['generated_text'].strip()
     try:
         resultItem = json.loads(preJSONResponse)
     except Exception as e:
@@ -382,9 +383,9 @@ def aggregateNums(fullDataObject):
     finalSummary = 0
     finalTags  = {}
     for item in (finalItem):
-        finalConnotation = finalConnotation + (item["connotationAggregate"] * item["answerCleanlinessScore"])
+        finalConnotation = finalConnotation + (item["connotationAggregate"])
         finalCleanliness = finalCleanliness + item["answerCleanlinessScore"]
-        finalSummary = finalSummary + (item['summaryAggregate'][0] * item["answerCleanlinessScore"])
+        finalSummary = finalSummary + (item['summaryAggregate'][0])
         for key, value in item["allTagsSum"].items():
             print(key, 'CURRENTKEY')
             if key in finalTags:
@@ -398,10 +399,11 @@ def aggregateNums(fullDataObject):
     finalSummary /= len(fullDataObject)
     for key, value in finalTags.items():
         finalTags[key] /= 3
+        finalTags[key] = round(finalTags[key], 2)
     ourLastItemForRealThisTime = {
-        "avgSummaryScore": finalSummary,
-        "avgCleanlinessScore": finalCleanliness,
-        "avgConnotationScore": finalConnotation,
+        "avgSummaryScore": round(finalSummary, 2),
+        "avgCleanlinessScore": round(finalCleanliness, 2),
+        "avgConnotationScore": round(finalConnotation, 2),
         "avgTagScores": finalTags
     }
     print('all results!!!', ourLastItemForRealThisTime)
@@ -413,7 +415,7 @@ async def getGibberishSort(strValList):
     for key, item in strValList.items():
         print(key + ' Answer: ' + str(item))
         if item: 
-            result = bobGibberishPipeline(key + ' Answer: ' + str(item))
+            result = get_gibberish_pipeline(key + ' Answer: ' + str(item))
             resultingGibberish[key + '|' + str(item)] = result
             print('SCORE! ', result)
     print(resultingGibberish)
