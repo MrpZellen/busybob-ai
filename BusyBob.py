@@ -64,8 +64,6 @@ bobOfTest = AutoModelForCausalLM.from_pretrained("nvidia/Nemotron-Mini-4B-Instru
 
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
-if torch.cuda.is_available():
-                torch.cuda.empty_cache()
 bobTestPipeline = pipeline(
     "text-generation",
     model="nvidia/Nemotron-Mini-4B-Instruct",
@@ -278,16 +276,8 @@ async def getAIResponse(currentData, previousData, avoidedWords, personalityDeta
         }}
         """
     print(message)
-    response = await asyncio.to_thread(
-            bobTestPipeline,
-            message,
-            max_new_tokens=250,
-            temperature=0.2,
-            do_sample=True,
-            return_full_text=False,  # Only return generated text
-            pad_token_id=tokenizer.eos_token_id
-        )
-    preJSONResponse = response[0]['generated_text'].strip()
+    response = bobTestPipeline({"role": "system", "content": message})
+    preJSONResponse = tokenizer.decode(response[0])
     try:
         resultItem = json.loads(preJSONResponse)
     except Exception as e:
