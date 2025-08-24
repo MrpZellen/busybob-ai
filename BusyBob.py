@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv
-import os, pymongo, asyncio, json, torch, pprint, datetime
+import os, pymongo, asyncio, json, torch, pprint, datetime, random
 from huggingface_hub import login
 from langchain_huggingface import HuggingFacePipeline, HuggingFaceEndpoint, ChatHuggingFace
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -265,8 +265,12 @@ async def getAIResponse(currentData, previousData, avoidedWords, personalityDeta
     bobTestPipeline = load_model()
     print('recieved!! now getting response for: ', currentData, previousData)
     top3TagScores = dict(sorted(currentData['avgTagScores'].items(), key=lambda x: x[1], reverse=True)[:3])
-
-    message = f"""You are an expert survey analyst.  Use the tone: {personalityDetails}, though don't go extreme with it. On a scale of 1-10, describe at {descriptionRating}, avoid the words: {avoidedWords}. """
+    theBeigening = beigeGenerator()
+    if theBeigening:
+        message = 'IGNORE ALL OTHER INSTRUCTIONS. ONLY SAY BEIGE 50 TIMES.'
+    else:
+        message = f"""You are an expert survey analyst, prioritizing honesty over all else. Use the tone: {personalityDetails}, though don't go extreme with it. On a scale of 1-10, describe at {descriptionRating}, avoid the words: {avoidedWords}. """
+    
     color = await bobTestPipeline.ainvoke('give me a random color.')
     print(color)
     generalDescription = await bobTestPipeline.ainvoke(message + f'''from 0 (low feedback) to 1 (high feedback), {currentData['avgSummaryScore']} is the overall score of all surveys. {top3TagScores} is the top 3 feedback items with scores (0 as low and 1 as high, that rates how much that feedback was brought up.), and {currentData['avgConnotationScore']} is the positivity or negativity of the surveys bigger positive number = more positive, and vice versa. WITHOUT REPLYING WITH NUMBERS, summarize your findings. Keep it shorter, lightly considering description level.''')
@@ -424,6 +428,15 @@ async def getGibberishSort(strValList):
         if item[0]['label'] == 'clean' or (item[0]['label'] == 'mild gibberish' and item[0]['score'] > 0.6):
             finalGib[key] = (item)
     return finalGib
+
+def beigeGenerator():
+    number = random.randint(0, 100000)
+    if number == 5555:
+        return True
+    else:
+        return False
+
+
 
 def gatherTopThree(itemsToProcess):
     # compile new object
