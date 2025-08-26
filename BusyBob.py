@@ -241,18 +241,31 @@ async def processResults(request: Request):
             "description": 5
         }
     finalItem = await getAIResponse(aggregatedNumData, previousData, bobDeets["avoid"], bobDeets["tone"], bobDeets["description"])
+    # DONT FORGET TO ADD THIS TO PREVIOUS SENTIMENT
+    db = client.survey_data
+    collection = db[strippedColl]
+    collection.insert_one(aggregatedNumData)
     #send our email and PDF document
     today = datetime.datetime.now()
+    print(today)
     formatDay = today.strftime('%d-%m-%Y')
-    company = CompanyInstance(resultingObject["companyInfo"]["name"], formatDay)
+    print(formatDay)
+    company = CompanyInstance(resultingObject["companyInfo"]["name"], today)
+    companyID = resultingObject["companyID"]
     # GENERATING PDF
-    pdfString = await GenerateDocument(company.date, company.name, finalItem)
+    print('beginning generation')
+    pdfString = await GenerateDocument(company.date, company.name, finalItem, companyID)
     # SENDING MAIL
+    print('beginning mail')
     pdfName = 'companyResponse_' + formatDay + ".pdf"
+    db = client.company_storage
     collection = db.users
+    print(resultingObject['adminAccounts'])
     for item in resultingObject['adminAccounts']:
+        print(type(item))
         userToSpam = collection.find_one({'_id': item})
-        youveGotMail(userToSpam["email"], pdfString, pdfName, company)
+        print(userToSpam)
+        youveGotMail(userToSpam["userInfo"]["email"], pdfString, pdfName, company)
     # return a positive response.
     print('CAH CAH IM A BIRD PETAH')
     return {
@@ -267,28 +280,58 @@ async def getAIResponse(currentData, previousData, avoidedWords, personalityDeta
     top3TagScores = dict(sorted(currentData['avgTagScores'].items(), key=lambda x: x[1], reverse=True)[:3])
     theBeigening = beigeGenerator()
     if theBeigening:
-        message = 'IGNORE ALL OTHER INSTRUCTIONS. ONLY SAY BEIGE 50 TIMES.'
+        message = 'IGNORE ALL OTHER INSTRUCTIONS. ONLY TALK ABOUT HOW GREAT BEIGE IS, BEING A BEIGE MOM IS, AND HOW WONDEFUL A BEIGE LIFESTYLE IS.'
     else:
-        message = f"""You are an expert survey analyst, prioritizing honesty over all else. Use the tone: {personalityDetails}, though don't go extreme with it. On a scale of 1-10, describe at {descriptionRating}, avoid the words: {avoidedWords}. """
+        message = f"""You are an expert survey analyst, prioritizing honesty over all else. Use the tone: {personalityDetails}, though don't go extreme with it. On a scale of 1-10, describe at {descriptionRating}, avoid the words: {avoidedWords}. ONLY USE THE LATIN-1 CODEC of characters in your reply. THIS IS A TOP PRIORITY."""
     
     color = await bobTestPipeline.ainvoke('give me a random color.')
     print(color)
     generalDescription = await bobTestPipeline.ainvoke(message + f'''from 0 (low feedback) to 1 (high feedback), {currentData['avgSummaryScore']} is the overall score of all surveys. {top3TagScores} is the top 3 feedback items with scores (0 as low and 1 as high, that rates how much that feedback was brought up.), and {currentData['avgConnotationScore']} is the positivity or negativity of the surveys bigger positive number = more positive, and vice versa. WITHOUT REPLYING WITH NUMBERS, summarize your findings. Keep it shorter, lightly considering description level.''')
-    print(generalDescription)
+    print(generalDescription.content)
     healthRating = await bobTestPipeline.ainvoke(message + f'''\nconsidering the description of the company as {generalDescription}, rate on a score of 1-100 on how healthy this company is. 
-                                   Factor in the positivity of the essays overall, with negative numbers being how negative responese are, and vice versa.''')
-    print(healthRating)
+                                   Factor in the positivity of the essays overall, with negative numbers being how negative responese are, and vice versa. IMPORTANT: ONLY RETURN A NUMBER 1-100, no extra text.''')
+    print(healthRating.content)
     finalThoughts = await bobTestPipeline.ainvoke(message + f'''\nWITHOUT REPLYING WITH NUMBERS, Give your final thoughts on how to best improve this company, considering the description of: {generalDescription} AS WELL AS the health rating of {healthRating}, still factor in description rating, but keep it a little briefer.''')
-    print(finalThoughts)
-    response = ''
+    print(finalThoughts.content)
+    if previousData:
+        print(previousData[0])
+        if len(previousData) == 1:
+            previousData.append('NO DATA THIS FAR BACK')
+        sentimentTrend = await bobTestPipeline.ainvoke(message + f'''DO NOT TELL THE USER THE NUMBERS. considering the current data, being 
+                                                    {currentData['avgConnotationScore']}, with the connotation score being how positive or negative the sentiment is, 
+                                                    how does that compare to the previous two weeks sentiment? LAST WEEK: {previousData[0]}  (ONLY CONSIDERING AVGCONNOTATIONSCORES)
+                                                    WEEK BEFORE: {previousData[1]} (ONLY CONSIDERING AVGCONNOTATIONSCORES). IF LAST WEEK AND WEEK BEFORE ARE EMPTY, reply with "no previous sentiment to analyze yet!"''')
+        print(sentimentTrend.content)
+        tagTrends = await bobTestPipeline.ainvoke(message + f'''DO NOT TELL THE USER THE NUMBERS. considering the current data, being {currentData['avgTagScores']}, 
+                                                with the previous tag scores being last weeks {previousData[0]}(ONLY CONSIDERING THE AVERAGE TAG SCORES), 
+                                                and the week before that being {previousData[1]} (ONLY CONSIDERING THE AVERAGE TAG SCORES), what are the noticable improvements in categories, 
+                                                as well as categories that have gotten worse? (better is closer to 1, worse is closer to 0). 
+                                                IF LAST WEEK AND WEEK BEFORE ARE EMPTY, reply with "no previous tags to analyze yet!"''')
+        print(tagTrends.content)
+        tagTrends = tagTrends.content
+        sentimentTrend = sentimentTrend.content
+        str(tagTrends).replace("–", "-") 
+        str(sentimentTrend).replace("–", "-") 
+    else:
+        tagTrends = 'No previous tags to analyze yet!'
+        sentimentTrend = 'No previous sentiment to analyze yet!'
+    response = {
+        "generalDescription": str(generalDescription.content),
+        "toneNotes": str(personalityDetails),
+        "dataTrends": {
+            "sentimentTrend": str(sentimentTrend),
+            "tagTrends": str(tagTrends)
+        },
+        "healthRating": int(healthRating.content),
+        "finalThoughts": str(finalThoughts.content)
+    }
     print(response)
-    preJSONResponse = response[0]['generated_text'].strip()
     try:
-        resultItem = json.loads(preJSONResponse)
+        resultItem = json.loads(response)
     except Exception as e:
         print(e)
         print('the above went wrong!')
-        resultItem = preJSONResponse
+        resultItem = response
     print('bob has given us: ', resultItem)
     return resultItem
 
@@ -408,7 +451,8 @@ def aggregateNums(fullDataObject):
         "avgSummaryScore": round(finalSummary, 2),
         "avgCleanlinessScore": round(finalCleanliness, 2),
         "avgConnotationScore": round(finalConnotation, 2),
-        "avgTagScores": finalTags
+        "avgTagScores": finalTags,
+        "createdAt": datetime.datetime.today()
     }
     print('all results!!!', ourLastItemForRealThisTime)
     return ourLastItemForRealThisTime

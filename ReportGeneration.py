@@ -15,7 +15,7 @@ class ColDoc:
 
 load_dotenv()
 
-CONNECTION_STRING = os.getenv('MONGODB_URI')
+CONNECTION_STRING = os.getenv('MONGOPDF_URI')
 
 if not CONNECTION_STRING:
     raise ValueError("CONNECTION_STRING is missing from environment variables")
@@ -64,9 +64,9 @@ CONNECTION_STRING = os.getenv('MONGODB_URI')
 if not CONNECTION_STRING:
     raise ValueError("CONNECTION_STRING is missing from environment variables")
 
-async def GenerateDocument(reportDate: datetime.date, companyName: str, bobResponse):
+async def GenerateDocument(reportDate: datetime.date, companyName: str, bobResponse, companyID):
     pdf = FPDF()
-    
+    print('we here', companyID)
     # Parse the JSON response
     try:
         if isinstance(bobResponse, str):
@@ -155,19 +155,15 @@ async def GenerateDocument(reportDate: datetime.date, companyName: str, bobRespo
         final_thoughts = response_data.get('finalThoughts', 'Analysis complete')
         pdf.multi_cell(w=0, h=6, txt=final_thoughts)
         
-        # Add footer with generation info
-        pdf.ln(h=15)
-        pdf.set_font('Courier', 'I', 10)
-        pdf.cell(w=0, h=5, txt=f"Generated on {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", align='C')
-        
         #output
         dateResultString = reportDate.strftime('%d-%m-%y')
         if (os.path.exists(f'BobPDF/{companyName}') == False):
             os.makedirs(f'BobPDF/{companyName}')
-        
+        print('here past pdf stuff')
         result = pdf.output(dest='S').encode('latin1')
         b64pdf = base64.b64encode(result).decode('ascii')
-        docToInsert = ColDoc('COM-newtest', b64pdf)
+        docToInsert = ColDoc(companyID, b64pdf)
+        print('inserting doc')
         await insertB64(docToInsert)
         return b64pdf
 
@@ -183,17 +179,19 @@ async def insertB64(insertedDoc: ColDoc):
         ]
     }
     print('reached connectDB')
-    client = pymongo.MongoClient('mongodb://localhost:2200/survey_data?directConnection=true')
+    client = pymongo.MongoClient(CONNECTION_STRING)
     db = client.survey_data
     collection = db.pdf_store
     if collection.find_one(filter={'companyID': insertedDoc.companyID}):
         print('sending update')
         result = collection.update_one(filter={'companyID': insertedDoc.companyID}, update={ '$push': {'pdfStore': myDictRes['pdfStore'][0] }})
+        print(result)
     else:
         print('sending new doc')
         result = collection.insert_one(myDictRes)
-    if result:
-        return True
+        print('resultOfInsert', result)
+    if result is not None:
+        return result
     else:
         return False
 
