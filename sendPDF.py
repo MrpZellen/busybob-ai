@@ -21,7 +21,8 @@ template = templateEnvironment.get_template('emailHeader.html')
 senderEmail = 'synersyllo@benleonard.net'
 def youveGotMail(recieverEmail: str, pdfStr: str, pdfName: str, companyInfo: CompanyInstance):
     print("we've got mail", pdfStr)
-    message = emails.Message(html=template.render(name=companyInfo.name, date=companyInfo.date), subject='SynerSyllo Weekly Report')
+    usedDate = companyInfo.date.strftime('%m/%d/%Y')
+    message = emails.Message(html=template.render(name=companyInfo.name, date=usedDate), subject='SynerSyllo Weekly Report')
     pdfData = base64.b64decode(pdfStr)
     print('no beef here')
     message.render(name=companyInfo.name, date=companyInfo.date)
