@@ -316,14 +316,14 @@ async def getAIResponse(currentData, previousData, avoidedWords, personalityDeta
         tagTrends = 'No previous tags to analyze yet!'
         sentimentTrend = 'No previous sentiment to analyze yet!'
     response = {
-        "generalDescription": str(generalDescription.content),
-        "toneNotes": str(personalityDetails),
+        "generalDescription": str(generalDescription.content).replace("–", "-") ,
+        "toneNotes": str(personalityDetails).replace("–", "-") ,
         "dataTrends": {
             "sentimentTrend": str(sentimentTrend),
             "tagTrends": str(tagTrends)
         },
-        "healthRating": int(healthRating.content),
-        "finalThoughts": str(finalThoughts.content)
+        "healthRating": int(healthRating.content).replace("–", "-") ,
+        "finalThoughts": str(finalThoughts.content).replace("–", "-") 
     }
     print(response)
     try:
