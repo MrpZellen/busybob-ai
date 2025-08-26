@@ -27,10 +27,10 @@ def youveGotMail(recieverEmail: str, pdfStr: str, pdfName: str, companyInfo: Com
     message.render(name=companyInfo.name, date=companyInfo.date)
     message.attach(data=pdfData, filename=pdfName)
     with open("assets/icon-png/longo.png", "rb") as f:
-        message.attach(data=f.read(), filename="longo.png", cid="longo")
+        message.attach(data=f.read(), filename="longo.png", cid="<longo>")
 
     with open("assets/icon-png/Icon.png", "rb") as f:
-        message.attach(data=f.read(), filename="Icon.png", cid="busybob")
+        message.attach(data=f.read(), filename="Icon.png", cid="<busybob>")
     
     response = message.send(to=recieverEmail, mail_from=senderEmail, smtp={'host': 'smtp.gmail.com', 'timeout': 5, 'port': 587, 'tls': True, 'user': 'Ben@benleonard.net', 'password': PASS})
     if response.status_code not in [250]:

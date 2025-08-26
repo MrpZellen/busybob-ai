@@ -322,7 +322,7 @@ async def getAIResponse(currentData, previousData, avoidedWords, personalityDeta
             "sentimentTrend": str(sentimentTrend),
             "tagTrends": str(tagTrends)
         },
-        "healthRating": int(healthRating.content).replace("–", "-") ,
+        "healthRating": int(healthRating.content),
         "finalThoughts": str(finalThoughts.content).replace("–", "-") 
     }
     print(response)
