@@ -118,6 +118,8 @@ async def post_root(request: Request):
         else:
             strValList[key] = value
     # gibberish filter clears out any gibberish responses FIRST
+    judgePipe = get_emotive_pipeline()
+    tagPipe = get_judgement_pipeline()
     resultForGibFilter = await getGibberishSort(strValList)
     print('GIBRES: ', resultForGibFilter)
     #resort data, we don't care about the GIB rating value now that we used it to sort out bad responses.
@@ -126,7 +128,7 @@ async def post_root(request: Request):
     for (key, value) in resultForGibFilter.items():
         sentSplit = str(key).split('|')
         # only answer input 1 is answer 0 is question, split
-        sentimentResult.append(get_emotive_pipeline(sentSplit[1]))
+        sentimentResult.append(judgePipe(sentSplit[1]))
     # pos/neg sentiment read off phrases.
     print('SENTRES: ', sentimentResult)
     #tagging our replies 
@@ -134,10 +136,10 @@ async def post_root(request: Request):
     # it runs way too slow when the AI processes every survey response especially when custom fields are added.
     # combine into one string, average sentiment check on that without checking every label that unnessecarily.
     oneBigGib = ' '.join([str(gibRes) for gibRes in resultForGibFilter.keys()])
-    summarySentiment.append(get_judgement_pipeline(sequences=oneBigGib, candidate_labels=labels))
+    summarySentiment.append(tagPipe(sequences=oneBigGib, candidate_labels=labels))
     print('SUMRES: ', summarySentiment)
     tagResult = []
-    tagResult.append(get_judgement_pipeline(sequences=[str(key) for key in resultForGibFilter.keys()], candidate_labels=labelsLite)) # longer process, lighter labels to help processing time
+    tagResult.append(tagPipe([str(key) for key in resultForGibFilter.keys()], candidate_labels=labelsLite)) # longer process, lighter labels to help processing time
     print('TAGRES: ', tagResult)
 
     # run the algorithm to find top 3 responses in text
@@ -291,18 +293,18 @@ async def getAIResponse(currentData, previousData, avoidedWords, personalityDeta
     healthRating = await bobTestPipeline.ainvoke(message + f'''\nconsidering the description of the company as {generalDescription}, rate on a score of 1-100 on how healthy this company is. 
                                    Factor in the positivity of the essays overall, with negative numbers being how negative responese are, and vice versa. IMPORTANT: ONLY RETURN A NUMBER 1-100, no extra text.''')
     print(healthRating.content)
-    finalThoughts = await bobTestPipeline.ainvoke(message + f'''\nWITHOUT REPLYING WITH NUMBERS, Give your final thoughts on how to best improve this company, considering the description of: {generalDescription} AS WELL AS the health rating of {healthRating}, still factor in description rating, but keep it a little briefer.''')
+    finalThoughts = await bobTestPipeline.ainvoke(message + f'''\nDo not share any numbers, Give your final thoughts on how to best improve this company, considering the description of: {generalDescription} AS WELL AS the health rating of {healthRating}, still factor in description rating, but keep it a little briefer.''')
     print(finalThoughts.content)
     if previousData:
         print(previousData[0])
         if len(previousData) == 1:
             previousData.append('NO DATA THIS FAR BACK')
-        sentimentTrend = await bobTestPipeline.ainvoke(message + f'''DO NOT TELL THE USER THE NUMBERS. considering the current data, being 
+        sentimentTrend = await bobTestPipeline.ainvoke(message + f'''Do not share any numbers. considering the current data, being 
                                                     {currentData['avgConnotationScore']}, with the connotation score being how positive or negative the sentiment is, 
                                                     how does that compare to the previous two weeks sentiment? LAST WEEK: {previousData[0]}  (ONLY CONSIDERING AVGCONNOTATIONSCORES)
                                                     WEEK BEFORE: {previousData[1]} (ONLY CONSIDERING AVGCONNOTATIONSCORES). IF LAST WEEK AND WEEK BEFORE ARE EMPTY, reply with "no previous sentiment to analyze yet!"''')
         print(sentimentTrend.content)
-        tagTrends = await bobTestPipeline.ainvoke(message + f'''DO NOT TELL THE USER THE NUMBERS. considering the current data, being {currentData['avgTagScores']}, 
+        tagTrends = await bobTestPipeline.ainvoke(message + f'''Do not share any numbers. considering the current data, being {currentData['avgTagScores']}, 
                                                 with the previous tag scores being last weeks {previousData[0]}(ONLY CONSIDERING THE AVERAGE TAG SCORES), 
                                                 and the week before that being {previousData[1]} (ONLY CONSIDERING THE AVERAGE TAG SCORES), what are the noticable improvements in categories, 
                                                 as well as categories that have gotten worse? (better is closer to 1, worse is closer to 0). 
@@ -459,11 +461,12 @@ def aggregateNums(fullDataObject):
 
 
 async def getGibberishSort(strValList):
+    gibPipe = get_gibberish_pipeline()
     resultingGibberish = {}
     for key, item in strValList.items():
         print(key + ' Answer: ' + str(item))
         if item: 
-            result = get_gibberish_pipeline(key + ' Answer: ' + str(item))
+            result = gibPipe(key + ' Answer: ' + str(item))
             resultingGibberish[key + '|' + str(item)] = result
             print('SCORE! ', result)
     print(resultingGibberish)
