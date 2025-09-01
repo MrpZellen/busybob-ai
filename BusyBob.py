@@ -101,6 +101,7 @@ async def post_root(request: Request):
     print("POST endpoint!")
     print('JSONT TIME')
     body = {}
+    myCalendarData = request["calendarDetails"]
     collType = request['coll']
     for key, nested_dict in request['data'].items():
         print('IN HERE')
@@ -146,7 +147,17 @@ async def post_root(request: Request):
     flatTagResult = [item for sublist in tagResult for item in sublist]
     print('starting top3')
     top3Results = gatherTopThree(flatTagResult)
-
+    bobTestPipeline = load_model()
+    print('LOADED BOB')
+    myCalendarResponse = bobTestPipeline.ainvoke(f'''
+    You are an expert calendar assistant. Given the following details about an employee's schedule: {myCalendarData},
+    with the data above being formatted like the google calendar API, analyze the frequency of meetings, the time spent in meetings,
+    and the general work-life balance of this employee. Consider how many meetings are back-to-back, the time of day meetings are scheduled,
+    and any patterns that may indicate a healthy or unhealthy work-life balance.
+    provide a number rating, 1-100 on the overall health of this employees schedule. 1 meaning extremely unhealthy, and 100 meaning perfectly balanced.
+    IMPORTANT: ONLY RETURN A NUMBER 1-100, no extra text.
+''')
+    print('CALRES: ', myCalendarResponse)
     #precleaning done! make item.
     fullQuestionItem = []
     currentIndex = 0
@@ -179,7 +190,8 @@ async def post_root(request: Request):
             "scores": [float(fl) for fl in summarySentiment[0]['scores']]
         },
         "topThreeResults": top3Results,
-        "fullQuestions": fullQuestionItem
+        "fullQuestions": fullQuestionItem,
+        "calendarRanking": int(myCalendarResponse),
     }
     # push to mongoDB
     client = pymongo.MongoClient(MONGODB_URI)
