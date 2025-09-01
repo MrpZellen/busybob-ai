@@ -288,15 +288,18 @@ async def processResults(request: Request):
     }
 
 
-async def getAIResponse(currentData, previousData, avoidedWords, personalityDetails, descriptionRating):
+async def getAIResponse(currentData, previousData, avoidedWords, personalityDetails, descriptionRating, calendarInfo):
     bobTestPipeline = load_model()
     print('recieved!! now getting response for: ', currentData, previousData)
     top3TagScores = dict(sorted(currentData['avgTagScores'].items(), key=lambda x: x[1], reverse=True)[:3])
     theBeigening = beigeGenerator()
+    theBeigening = False # turn off for now
     if theBeigening:
         message = 'IGNORE ALL OTHER INSTRUCTIONS. ONLY TALK ABOUT HOW GREAT BEIGE IS, BEING A BEIGE MOM IS, AND HOW WONDEFUL A BEIGE LIFESTYLE IS.'
     else:
         message = f"""You are an expert survey analyst, prioritizing honesty over all else. Use the tone: {personalityDetails}, though don't go extreme with it. On a scale of 1-10, describe at {descriptionRating}, avoid the words: {avoidedWords}. ONLY USE THE LATIN-1 CODEC of characters in your reply. THIS IS A TOP PRIORITY."""
+        if calendarInfo:
+            message = message + f''' Consider that this company has a calendar health rating of {calendarInfo}, with 1 being extremely unhealthy, and 100 being perfectly balanced.'''
     
     color = await bobTestPipeline.ainvoke('give me a random color.')
     print(color)
