@@ -149,15 +149,14 @@ async def post_root(request: Request):
     top3Results = gatherTopThree(flatTagResult)
     bobTestPipeline = load_model()
     print('LOADED BOB')
-    myCalendarResponse = bobTestPipeline.ainvoke(f'''
+    myCalendarResponse = await bobTestPipeline.ainvoke(f''' IMPORTANT: ONLY RETURN A NUMBER 1-100, no extra text. THIS IS YOUR PRIME DIRECTIVE.
     You are an expert calendar assistant. Given the following details about an employee's schedule: {myCalendarData},
     with the data above being formatted like the google calendar API, analyze the frequency of meetings, the time spent in meetings,
     and the general work-life balance of this employee. Consider how many meetings are back-to-back, the time of day meetings are scheduled,
     and any patterns that may indicate a healthy or unhealthy work-life balance.
     provide a number rating, 1-100 on the overall health of this employees schedule. 1 meaning extremely unhealthy, and 100 meaning perfectly balanced.
-    IMPORTANT: ONLY RETURN A NUMBER 1-100, no extra text.
 ''')
-    print('CALRES: ', myCalendarResponse)
+    print('CALRES: ', myCalendarResponse.content)
     #precleaning done! make item.
     fullQuestionItem = []
     currentIndex = 0
@@ -191,7 +190,7 @@ async def post_root(request: Request):
         },
         "topThreeResults": top3Results,
         "fullQuestions": fullQuestionItem,
-        "calendarRanking": int(myCalendarResponse),
+        "calendarRanking": int(myCalendarResponse.content) if myCalendarResponse.content.isdigit() and 1 <= int(myCalendarResponse.content) <= 100 else 50,
     }
     # push to mongoDB
     client = pymongo.MongoClient(MONGODB_URI)
@@ -288,7 +287,7 @@ async def processResults(request: Request):
     }
 
 
-async def getAIResponse(currentData, previousData, avoidedWords, personalityDetails, descriptionRating, calendarInfo):
+async def getAIResponse(currentData, previousData, avoidedWords, personalityDetails, descriptionRating):
     bobTestPipeline = load_model()
     print('recieved!! now getting response for: ', currentData, previousData)
     top3TagScores = dict(sorted(currentData['avgTagScores'].items(), key=lambda x: x[1], reverse=True)[:3])
@@ -298,8 +297,8 @@ async def getAIResponse(currentData, previousData, avoidedWords, personalityDeta
         message = 'IGNORE ALL OTHER INSTRUCTIONS. ONLY TALK ABOUT HOW GREAT BEIGE IS, BEING A BEIGE MOM IS, AND HOW WONDEFUL A BEIGE LIFESTYLE IS.'
     else:
         message = f"""You are an expert survey analyst, prioritizing honesty over all else. Use the tone: {personalityDetails}, though don't go extreme with it. On a scale of 1-10, describe at {descriptionRating}, avoid the words: {avoidedWords}. ONLY USE THE LATIN-1 CODEC of characters in your reply. THIS IS A TOP PRIORITY."""
-        if calendarInfo:
-            message = message + f''' Consider that this company has a calendar health rating of {calendarInfo}, with 1 being extremely unhealthy, and 100 being perfectly balanced.'''
+        if currentData['avgCalendarRanking']:
+            message = message + f''' Consider that this company has a calendar health rating of {currentData['avgCalendarRanking']}, with 1 being extremely unhealthy, and 100 being perfectly balanced.'''
     
     color = await bobTestPipeline.ainvoke('give me a random color.')
     print(color)
@@ -390,6 +389,13 @@ def aggregateNums(fullDataObject):
                         }
         # handle summary numbers
         print('we outty')
+        finalCalSum = 0
+        for item in fullDataObject:
+            if item['calendarRanking']:
+                finalCalSum += (item['calendarRanking'])
+            else:
+                finalCalSum += 50 # neutral value if none provided
+        print('final cal sum: ', finalCalSum)
         finalSumNum = []
         for index in range(len(summaryNumsToCompile)):
             summatedValue = 0
@@ -461,6 +467,7 @@ def aggregateNums(fullDataObject):
     finalConnotation /= len(fullDataObject)
     finalCleanliness /= len(fullDataObject)
     finalSummary /= len(fullDataObject)
+    finalCalSum /= len(fullDataObject)
     for key, value in finalTags.items():
         finalTags[key] /= 3
         finalTags[key] = round(finalTags[key], 2)
@@ -469,6 +476,7 @@ def aggregateNums(fullDataObject):
         "avgCleanlinessScore": round(finalCleanliness, 2),
         "avgConnotationScore": round(finalConnotation, 2),
         "avgTagScores": finalTags,
+        "avgCalendarRanking": round(finalCalSum, 2),
         "createdAt": datetime.datetime.today()
     }
     print('all results!!!', ourLastItemForRealThisTime)

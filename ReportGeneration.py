@@ -101,6 +101,7 @@ async def GenerateDocument(reportDate: datetime.date, companyName: str, bobRespo
         pdf.output('BobPDF/BobTest.pdf', 'F')
     else:
         # HEADER content
+
         pdf.set_font('Courier', 'B', 40)
         pdf.multi_cell(w=0, h=20, txt=companyName, align='C')
         pdf.set_font('Courier', 'I', 20)
